@@ -1,84 +1,95 @@
 import discord
 from discord.ext import commands
-import asyncio
 import os
+import asyncio
+import yt_dlp
 
-# INTENTS
 intents = discord.Intents.default()
-intents.members = True
-intents.messages = True
 intents.message_content = True
-intents.dm_messages = True
-intents.guilds = True
+intents.members = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-dm_task_running = False
+queue = []
 
-# BOT READY + ACTIVITY STATUS
 @bot.event
 async def on_ready():
     activity = discord.Game(name="Driving GT 650 at 200Km/h speed")
     await bot.change_presence(status=discord.Status.online, activity=activity)
     print(f"✅ Logged in as {bot.user}")
 
-# STATUS COMMAND
+# STATUS
 @bot.command()
 async def status(ctx):
-    await ctx.send("🟢 Bot is ONLINE and Running!")
+    await ctx.send("✅ Official Organizer Bot is Online!")
 
-# STOP DM COMMAND
+# STOP BOT (ADMIN)
 @bot.command()
-async def stop(ctx):
-    global dm_task_running
-    dm_task_running = False
-    await ctx.send("🛑 DM process stopped!")
+@commands.has_permissions(administrator=True)
+async def stopbot(ctx):
+    await ctx.send("🛑 Bot shutting down...")
+    await bot.close()
 
 # DM ROLE COMMAND
 @bot.command()
 async def dmrole(ctx, role: discord.Role, *, message):
-    global dm_task_running
-
-    # Permission Check
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.send("❌ You need Administrator permission!")
-
-    # Prevent multiple runs
-    if dm_task_running:
-        return await ctx.send("⚠️ DM process already running!")
-
-    dm_task_running = True
     sent = 0
     failed = 0
-    skipped_users = []
-
-    await ctx.send(f"📨 Starting DM to role: **{role.name}**")
+    await ctx.send(f"📨 Sending DMs to {role.name}...")
 
     for member in role.members:
-        if not dm_task_running:
-            await ctx.send("❌ DM task cancelled!")
-            break
-
         try:
+            await asyncio.sleep(4)
             await member.send(message)
             sent += 1
-            await asyncio.sleep(4)  # 3–5 second delay
         except:
             failed += 1
-            skipped_users.append(member.name)
 
-    dm_task_running = False
+    await ctx.send(f"✅ Sent: {sent} | ❌ Failed: {failed}")
 
-    report = (
-        f"✅ **DM Process Finished**\n"
-        f"📩 Sent: {sent}\n"
-        f"❌ Failed: {failed}"
-    )
+# MUSIC PLAY
+@bot.command()
+async def play(ctx, *, search):
+    if not ctx.author.voice:
+        return await ctx.send("❌ Join a voice channel first!")
 
-    if skipped_users:
-        report += "\n🚫 Skipped (DM Off): " + ", ".join(skipped_users)
+    channel = ctx.author.voice.channel
 
-    await ctx.send(report)
+    if not ctx.voice_client:
+        await channel.connect()
 
-# RUN BOT
+    vc = ctx.voice_client
+
+    ydl_opts = {"format": "bestaudio"}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"ytsearch:{search}", download=False)
+        url = info["entries"][0]["url"]
+
+    vc.stop()
+    vc.play(discord.FFmpegPCMAudio(url))
+
+    await ctx.send(f"🎵 Now Playing: **{search}**")
+
+# PAUSE
+@bot.command()
+async def pause(ctx):
+    if ctx.voice_client:
+        ctx.voice_client.pause()
+        await ctx.send("⏸ Paused")
+
+# RESUME
+@bot.command()
+async def resume(ctx):
+    if ctx.voice_client:
+        ctx.voice_client.resume()
+        await ctx.send("▶️ Resumed")
+
+# STOP MUSIC
+@bot.command()
+async def stop(ctx):
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("🛑 Music stopped")
+
 bot.run(os.getenv("TOKEN"))
