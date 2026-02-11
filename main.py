@@ -2,20 +2,38 @@ import discord
 from discord.ext import commands
 import asyncio
 import os
+from flask import Flask
+from threading import Thread
 
-# INTENTS
+# ================= FLASK KEEP ALIVE =================
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+def keep_alive():
+    Thread(target=run).start()
+
+keep_alive()
+
+# ================= DISCORD BOT =================
+
 intents = discord.Intents.default()
 intents.members = True
 intents.messages = True
 intents.message_content = True
-intents.dm_messages = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 dm_task_running = False
 
-# BOT READY + ACTIVITY STATUS
+# BOT READY
 @bot.event
 async def on_ready():
     activity = discord.Game(name="Gilli danda with Hunter in Dark Reign Esports")
@@ -39,11 +57,9 @@ async def stop(ctx):
 async def dmrole(ctx, role: discord.Role, *, message):
     global dm_task_running
 
-    # Permission Check
     if not ctx.author.guild_permissions.administrator:
         return await ctx.send("❌ You need Administrator permission!")
 
-    # Prevent multiple runs
     if dm_task_running:
         return await ctx.send("⚠️ DM process already running!")
 
@@ -62,8 +78,8 @@ async def dmrole(ctx, role: discord.Role, *, message):
         try:
             await member.send(message)
             sent += 1
-            await asyncio.sleep(4)  # 3–5 second delay
-        except:
+            await asyncio.sleep(4)
+        except Exception:
             failed += 1
             skipped_users.append(member.name)
 
@@ -79,23 +95,6 @@ async def dmrole(ctx, role: discord.Role, *, message):
         report += "\n🚫 Skipped (DM Off): " + ", ".join(skipped_users)
 
     await ctx.send(report)
-    from flask import Flask
-from threading import Thread
-import os
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is running"
-
-def run():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-def keep_alive():
-    Thread(target=run).start()
-
-keep_alive()
 
 # RUN BOT
 bot.run(os.getenv("TOKEN"))
