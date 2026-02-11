@@ -1,41 +1,84 @@
 import discord
 from discord.ext import commands
+import asyncio
 import os
 
-intents = discord.Intents.all()
+# INTENTS
+intents = discord.Intents.default()
+intents.members = True
+intents.messages = True
+intents.message_content = True
+intents.dm_messages = True
+intents.guilds = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-teams = []
+dm_task_running = False
 
+# BOT READY + ACTIVITY STATUS
 @bot.event
 async def on_ready():
-    print(f"✅ Official Organizer Online as {bot.user}")
+    activity = discord.Game(name="Driving GT 650 at 200Km/h speed")
+    await bot.change_presence(status=discord.Status.online, activity=activity)
+    print(f"✅ Logged in as {bot.user}")
 
+# STATUS COMMAND
 @bot.command()
-async def scrim(ctx, *, name):
-    await ctx.send(f"🏆 Scrim Created: **{name}**")
+async def status(ctx):
+    await ctx.send("🟢 Bot is ONLINE and Running!")
 
+# STOP DM COMMAND
 @bot.command()
-async def tournament(ctx, *, name):
-    await ctx.send(f"🔥 Tournament Created: **{name}**")
+async def stop(ctx):
+    global dm_task_running
+    dm_task_running = False
+    await ctx.send("🛑 DM process stopped!")
 
+# DM ROLE COMMAND
 @bot.command()
-async def register(ctx, team_name):
-    teams.append(team_name)
-    await ctx.send(f"✅ Team Registered: **{team_name}**")
+async def dmrole(ctx, role: discord.Role, *, message):
+    global dm_task_running
 
-@bot.command()
-async def slots(ctx):
-    if not teams:
-        await ctx.send("❌ No teams registered")
-        return
-    msg = "**📋 SLOT LIST:**\n"
-    for i, t in enumerate(teams, 1):
-        msg += f"{i}. {t}\n"
-    await ctx.send(msg)
+    # Permission Check
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.send("❌ You need Administrator permission!")
 
-@bot.command()
-async def room(ctx, room_id, password):
-    await ctx.send(f"🎮 ROOM ID: `{room_id}`\n🔑 PASS: `{password}`")
+    # Prevent multiple runs
+    if dm_task_running:
+        return await ctx.send("⚠️ DM process already running!")
 
+    dm_task_running = True
+    sent = 0
+    failed = 0
+    skipped_users = []
+
+    await ctx.send(f"📨 Starting DM to role: **{role.name}**")
+
+    for member in role.members:
+        if not dm_task_running:
+            await ctx.send("❌ DM task cancelled!")
+            break
+
+        try:
+            await member.send(message)
+            sent += 1
+            await asyncio.sleep(4)  # 3–5 second delay
+        except:
+            failed += 1
+            skipped_users.append(member.name)
+
+    dm_task_running = False
+
+    report = (
+        f"✅ **DM Process Finished**\n"
+        f"📩 Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
+    if skipped_users:
+        report += "\n🚫 Skipped (DM Off): " + ", ".join(skipped_users)
+
+    await ctx.send(report)
+
+# RUN BOT
 bot.run(os.getenv("TOKEN"))
