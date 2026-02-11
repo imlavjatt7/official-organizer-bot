@@ -18,14 +18,14 @@ dm_task_running = False
 # BOT READY + ACTIVITY STATUS
 @bot.event
 async def on_ready():
-    activity = discord.Game(name="Gilli Danda with Hunter in Dark Reign Esports")
+    activity = discord.Game(name="Gilli danda with Hunter in Dark Reign Esports")
     await bot.change_presence(status=discord.Status.online, activity=activity)
     print(f"✅ Logged in as {bot.user}")
 
 # STATUS COMMAND
 @bot.command()
 async def status(ctx):
-    await ctx.send("🟢 Bot is ONLINE and running!")
+    await ctx.send("🟢 Bot is ONLINE and Running!")
 
 # STOP DM COMMAND
 @bot.command()
@@ -39,11 +39,11 @@ async def stop(ctx):
 async def dmrole(ctx, role: discord.Role, *, message):
     global dm_task_running
 
-    # Admin permission check
+    # Permission Check
     if not ctx.author.guild_permissions.administrator:
         return await ctx.send("❌ You need Administrator permission!")
 
-    # Prevent multiple DM runs
+    # Prevent multiple runs
     if dm_task_running:
         return await ctx.send("⚠️ DM process already running!")
 
@@ -62,7 +62,7 @@ async def dmrole(ctx, role: discord.Role, *, message):
         try:
             await member.send(message)
             sent += 1
-            await asyncio.sleep(4)  # Delay (3–5 sec)
+            await asyncio.sleep(4)  # 3–5 second delay
         except:
             failed += 1
             skipped_users.append(member.name)
