@@ -5,25 +5,23 @@ import os
 from flask import Flask
 from threading import Thread
 
-# ================= FLASK KEEP ALIVE =================
+OWNER_ID = 1095541663121801226  # YOUR ID
 
-app = Flask('')
+# ================= KEEP ALIVE =================
 
-@app.route('/')
-def home():
-    return "Bot is running!"
+if os.environ.get("RENDER") == "true":
+    app = Flask('')
 
-def run():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    @app.route('/')
+    def home():
+        return "Bot is running!"
 
-def keep_alive():
+    def run():
+        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
     Thread(target=run).start()
 
-keep_alive()
-
 # ================= DISCORD BOT =================
-
-OWNER_ID = 1095541663121801226  # YOUR USER ID
 
 intents = discord.Intents.default()
 intents.members = True
@@ -31,113 +29,99 @@ intents.messages = True
 intents.message_content = True
 intents.guilds = True
 
-def get_prefix(bot, message):
-    if message.author.id == OWNER_ID:
-        return ""  # No prefix for owner
-    return "!"     # Prefix for others
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-bot = commands.Bot(command_prefix=get_prefix, intents=intents)
-
-# DM TRACKING DATA
 dm_task_running = False
-sent_count = 0
-failed_count = 0
-total_targets = 0
+dm_sent = 0
+dm_failed = 0
+dm_total = 0
 
-# ================= BOT READY =================
+# ================= READY =================
 
 @bot.event
 async def on_ready():
-    if hasattr(bot, "ready_once"):
+    if getattr(bot, "already_ready", False):
         return
-    bot.ready_once = True
+    bot.already_ready = True
 
     activity = discord.Game(name="Gilli danda with Hunter in Dark Reign Esports")
     await bot.change_presence(status=discord.Status.online, activity=activity)
+
     print(f"✅ Logged in as {bot.user}")
 
-# ================= STATUS COMMAND =================
+# ================= NO PREFIX FOR OWNER =================
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    # Owner no prefix commands
+    if message.author.id == OWNER_ID:
+        ctx = await bot.get_context(message)
+        if ctx.command:
+            await bot.invoke(ctx)
+            return
+
+    await bot.process_commands(message)
+
+# ================= STATUS =================
 
 @bot.command()
 async def status(ctx):
-    if dm_task_running:
-        remaining = total_targets - sent_count - failed_count
-        await ctx.send(
-            f"📊 **DM STATUS (LIVE)**\n"
-            f"▶ Running: ✅\n"
-            f"📩 Sent: {sent_count}\n"
-            f"❌ Failed: {failed_count}\n"
-            f"⏳ Remaining: {remaining}"
-        )
-    else:
-        await ctx.send(
-            f"🟢 **Bot is ONLINE**\n"
-            f"📩 Last Sent: {sent_count}\n"
-            f"❌ Last Failed: {failed_count}\n"
-            f"⛔ DM Process: Not Running"
-        )
+    await ctx.send(
+        f"🟢 Bot ONLINE\n"
+        f"📩 DM Sent: {dm_sent}\n"
+        f"❌ DM Failed: {dm_failed}\n"
+        f"⏳ Remaining: {dm_total - (dm_sent + dm_failed)}"
+    )
 
-# ================= STOP COMMAND =================
+# ================= STOP DM =================
 
 @bot.command()
 async def stop(ctx):
     global dm_task_running
     dm_task_running = False
-    await ctx.send("🛑 DM process stopped!")
+    await ctx.send("🛑 DM Process Stopped!")
 
-# ================= DM ROLE COMMAND =================
+# ================= DM ROLE =================
 
 @bot.command()
 async def dmrole(ctx, role: discord.Role, *, message):
-    global dm_task_running, sent_count, failed_count, total_targets
+    global dm_task_running, dm_sent, dm_failed, dm_total
 
-    # Permission Check
     if ctx.author.id != OWNER_ID and not ctx.author.guild_permissions.administrator:
-        return await ctx.send("❌ Admin or Owner only!")
+        return await ctx.send("❌ Only Admin or Owner can use this!")
 
-    # Prevent duplicate runs
     if dm_task_running:
-        return await ctx.send("⚠️ DM process already running!")
+        return await ctx.send("⚠️ DM already running!")
 
     dm_task_running = True
-    sent_count = 0
-    failed_count = 0
-    total_targets = len(role.members)
+    dm_sent = 0
+    dm_failed = 0
+    dm_total = len(role.members)
 
-    await ctx.send(f"📨 Starting DM to role: **{role.name}**")
+    await ctx.send(f"📨 Starting DM to **{role.name}** ({dm_total} users)")
 
     for member in role.members:
         if not dm_task_running:
-            await ctx.send("❌ DM task cancelled!")
+            await ctx.send("❌ DM Cancelled!")
             break
 
         try:
             await member.send(message)
-            sent_count += 1
-            await asyncio.sleep(4)  # Delay to avoid rate limits
-        except Exception:
-            failed_count += 1
+            dm_sent += 1
+            await asyncio.sleep(4)
+        except:
+            dm_failed += 1
 
     dm_task_running = False
 
-    remaining = total_targets - sent_count - failed_count
-
-    report = (
-        f"✅ **DM Process Finished**\n"
-        f"📩 Sent: {sent_count}\n"
-        f"❌ Failed: {failed_count}\n"
-        f"⏳ Remaining: {remaining}"
+    await ctx.send(
+        f"✅ DM Finished!\n"
+        f"📩 Sent: {dm_sent}\n"
+        f"❌ Failed: {dm_failed}"
     )
-
-    await ctx.send(report)
-
-# ================= ERROR HANDLER =================
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        return
-    await ctx.send("❌ Command Error!")
 
 # ================= RUN BOT =================
 
