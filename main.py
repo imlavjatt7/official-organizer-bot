@@ -1,152 +1,154 @@
 import discord
 from discord.ext import commands
+import yt_dlp
+import openai
 import asyncio
-import os
-from flask import Flask
-from threading import Thread
 
-OWNER_ID = 1095541663121801226  # TERI ID
-REQUIRED_ROLE_NAME = "Dadmin"  # REQUIRED ROLE NAME
+# ================= CONFIG ================= #
 
-# ================= FLASK KEEP ALIVE =================
+TOKEN = "YOUR_BOT_TOKEN"
+OPENAI_KEY = "YOUR_OPENAI_KEY"
 
-app = Flask('')
+openai.api_key = OPENAI_KEY
 
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-def keep_alive():
-    Thread(target=run).start()
-
-keep_alive()
-
-# ================= DISCORD BOT =================
-
-intents = discord.Intents.default()
-intents.members = True
-intents.messages = True
-intents.message_content = True
-intents.guilds = True
-
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-dm_task_running = False
-sent_count = 0
-total_members = 0
+# ================= GLOBAL DATA ================= #
 
-# ================= BOT READY =================
+queues = {}
+autoplay_status = {}
+stay_247 = {}
+
+# ================= AI CHAT ================= #
+
+@bot.command()
+async def ai(ctx, *, question):
+    try:
+        msg = await ctx.send("🤖 Thinking...")
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": question}]
+        )
+        reply = response.choices[0].message.content
+        await msg.edit(content=reply[:2000])
+    except Exception as e:
+        await ctx.send(f"❌ AI Error: {e}")
+
+# ================= MUSIC SYSTEM ================= #
+
+async def play_next(ctx):
+    guild_id = ctx.guild.id
+    vc = ctx.voice_client
+
+    if guild_id in queues and queues[guild_id]:
+        next_song = queues[guild_id].pop(0)
+        await play_song(ctx, next_song)
+    else:
+        if autoplay_status.get(guild_id, False):
+            current = getattr(vc, "last_title", None)
+            if current:
+                await play_song(ctx, current)
+
+async def play_song(ctx, query):
+    guild_id = ctx.guild.id
+    vc = ctx.voice_client
+
+    ydl_opts = {'format': 'bestaudio', 'noplaylist': True, 'quiet': True}
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"ytsearch:{query}", download=False)
+        info = info['entries'][0]
+        url2 = info['url']
+        title = info['title']
+
+    source = discord.FFmpegPCMAudio(
+        url2,
+        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        options="-vn"
+    )
+
+    vc.last_title = title
+
+    def after_play(error):
+        fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+        try:
+            fut.result()
+        except:
+            pass
+
+    vc.play(source, after=after_play)
+    await ctx.send(f"🎵 Now Playing: **{title}**")
+
+@bot.command(aliases=["p"])
+async def play(ctx, *, query):
+    if not ctx.author.voice:
+        return await ctx.send("❌ Join VC first!")
+
+    channel = ctx.author.voice.channel
+
+    if ctx.voice_client is None:
+        await channel.connect()
+
+    guild_id = ctx.guild.id
+
+    if ctx.voice_client.is_playing():
+        queues.setdefault(guild_id, []).append(query)
+        await ctx.send(f"➕ Added to Queue: **{query}**")
+    else:
+        await play_song(ctx, query)
+
+@bot.command()
+async def skip(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await ctx.send("⏭ Skipped")
+
+@bot.command()
+async def stop(ctx):
+    guild_id = ctx.guild.id
+    queues[guild_id] = []
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("⏹ Music Stopped")
+
+# ================= AUTOPLAY ================= #
+
+@bot.command()
+async def autoplay(ctx, mode):
+    guild_id = ctx.guild.id
+    if mode.lower() == "on":
+        autoplay_status[guild_id] = True
+        await ctx.send("🔁 Autoplay Enabled")
+    else:
+        autoplay_status[guild_id] = False
+        await ctx.send("⛔ Autoplay Disabled")
+
+# ================= 24/7 MODE ================= #
+
+@bot.command(name="247")
+async def stay(ctx, mode):
+    guild_id = ctx.guild.id
+    if mode.lower() == "on":
+        stay_247[guild_id] = True
+        await ctx.send("♾ 24/7 Mode Enabled")
+    else:
+        stay_247[guild_id] = False
+        await ctx.send("❌ 24/7 Mode Disabled")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member.bot:
+        return
+    vc = member.guild.voice_client
+    if vc and not stay_247.get(member.guild.id, False):
+        if len(vc.channel.members) == 1:
+            await vc.disconnect()
+
+# ================= READY ================= #
 
 @bot.event
 async def on_ready():
-    activity = discord.Game(name="Gilli danda with Hunter in Dark Reign Esports")
-    await bot.change_presence(status=discord.Status.online, activity=activity)
-    print(f"✅ Logged in as {bot.user}")
+    print(f"Logged in as {bot.user}")
 
-# ================= OWNER NO PREFIX =================
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-
-    # OWNER = no prefix allowed
-    if message.author.id == OWNER_ID:
-        ctx = await bot.get_context(message)
-        if ctx.command:
-            await bot.invoke(ctx)
-            return
-
-    await bot.process_commands(message)
-
-# ================= ROLE CHECK =================
-
-def has_required_role():
-    async def predicate(ctx):
-        # Owner bypass
-        if ctx.author.id == OWNER_ID:
-            return True
-        
-        role = discord.utils.get(ctx.author.roles, name=REQUIRED_ROLE_NAME)
-        if role is None:
-            await ctx.send("❌ You need **Dadmin** role to use this command!")
-            return False
-        
-        return True
-    return commands.check(predicate)
-
-# ================= STATUS COMMAND =================
-
-@bot.command()
-@has_required_role()
-async def status(ctx):
-    remaining = total_members - sent_count
-    await ctx.send(
-        f"🟢 **DM STATUS**\n"
-        f"📩 Sent: {sent_count}\n"
-        f"📥 Remaining: {remaining if remaining > 0 else 0}\n"
-        f"📦 Total: {total_members}"
-    )
-
-# ================= STOP COMMAND =================
-
-@bot.command()
-@has_required_role()
-async def stop(ctx):
-    global dm_task_running
-    dm_task_running = False
-    await ctx.send("🛑 DM process stopped!")
-
-# ================= DM ROLE COMMAND =================
-
-@bot.command()
-@has_required_role()
-async def dmrole(ctx, role: discord.Role, *, message):
-    global dm_task_running, sent_count, total_members
-
-    if dm_task_running:
-        return await ctx.send("⚠️ DM already running!")
-
-    dm_task_running = True
-    sent_count = 0
-    failed = 0
-    skipped_users = []
-
-    members = list(set(role.members))  # DUPLICATE FIX
-    total_members = len(members)
-
-    await ctx.send(f"📨 Starting DM to **{role.name}** ({total_members} users)")
-
-    for member in members:
-        if not dm_task_running:
-            await ctx.send("❌ DM cancelled!")
-            break
-
-        try:
-            await member.send(message)
-            sent_count += 1
-            await asyncio.sleep(4)
-        except:
-            failed += 1
-            skipped_users.append(member.name)
-
-    dm_task_running = False
-
-    report = (
-        f"✅ **DM FINISHED**\n"
-        f"📩 Sent: {sent_count}\n"
-        f"❌ Failed: {failed}\n"
-        f"📦 Total: {total_members}"
-    )
-
-    if skipped_users:
-        report += "\n🚫 Skipped (DM OFF): " + ", ".join(skipped_users)
-
-    await ctx.send(report)
-
-# ================= RUN BOT =================
-
-bot.run(os.getenv("TOKEN"))
+bot.run(TOKEN)
