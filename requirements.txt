@@ -1,4 +1,4 @@
 discord.py
-wavelink
-openai
+yt-dlp
 PyNaCl
+openai
