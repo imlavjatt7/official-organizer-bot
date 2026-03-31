@@ -1,5 +1,1 @@
 discord.py
-yt-dlp
-PyNaCl
-ffmpeg-python
-openai
