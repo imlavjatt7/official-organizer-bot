@@ -1,154 +1,247 @@
 import discord
 from discord.ext import commands
-import yt_dlp
-import openai
-import asyncio
-
-# ================= CONFIG ================= #
-
-TOKEN = "YOUR_BOT_TOKEN"
-OPENAI_KEY = "YOUR_OPENAI_KEY"
-
-openai.api_key = OPENAI_KEY
+from datetime import datetime, timedelta
+import json
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix=".", intents=intents)
 
-# ================= GLOBAL DATA ================= #
+OWNER_ID = 1095541663121801226
+LOG_CHANNEL = "security-logs"
 
-queues = {}
-autoplay_status = {}
-stay_247 = {}
-
-# ================= AI CHAT ================= #
-
-@bot.command()
-async def ai(ctx, *, question):
+# ================= DATABASE =================
+def load_data():
     try:
-        msg = await ctx.send("🤖 Thinking...")
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": question}]
-        )
-        reply = response.choices[0].message.content
-        await msg.edit(content=reply[:2000])
-    except Exception as e:
-        await ctx.send(f"❌ AI Error: {e}")
+        with open("data.json", "r") as f:
+            return json.load(f)
+    except:
+        return {
+            "whitelist": [OWNER_ID],
+            "extra_owner": [],
+            "antinuke": True,
+            "automod": True
+        }
 
-# ================= MUSIC SYSTEM ================= #
+def save_data(data):
+    with open("data.json", "w") as f:
+        json.dump(data, f)
 
-async def play_next(ctx):
-    guild_id = ctx.guild.id
-    vc = ctx.voice_client
+data = load_data()
 
-    if guild_id in queues and queues[guild_id]:
-        next_song = queues[guild_id].pop(0)
-        await play_song(ctx, next_song)
-    else:
-        if autoplay_status.get(guild_id, False):
-            current = getattr(vc, "last_title", None)
-            if current:
-                await play_song(ctx, current)
+# ================= UTILS =================
+def is_safe(user):
+    return user.id in data["whitelist"] or user.id in data["extra_owner"]
 
-async def play_song(ctx, query):
-    guild_id = ctx.guild.id
-    vc = ctx.voice_client
+def antinuke_on():
+    return data["antinuke"]
 
-    ydl_opts = {'format': 'bestaudio', 'noplaylist': True, 'quiet': True}
+def automod_on():
+    return data["automod"]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch:{query}", download=False)
-        info = info['entries'][0]
-        url2 = info['url']
-        title = info['title']
+# ================= LOG =================
+async def log(guild, title, desc, color=0xff0000):
+    ch = discord.utils.get(guild.text_channels, name=LOG_CHANNEL)
+    if ch:
+        embed = discord.Embed(title=title, description=desc, color=color)
+        embed.set_footer(text="🛡️ Security System")
+        embed.timestamp = datetime.utcnow()
+        await ch.send(embed=embed)
 
-    source = discord.FFmpegPCMAudio(
-        url2,
-        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        options="-vn"
-    )
-
-    vc.last_title = title
-
-    def after_play(error):
-        fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
-        try:
-            fut.result()
-        except:
-            pass
-
-    vc.play(source, after=after_play)
-    await ctx.send(f"🎵 Now Playing: **{title}**")
-
-@bot.command(aliases=["p"])
-async def play(ctx, *, query):
-    if not ctx.author.voice:
-        return await ctx.send("❌ Join VC first!")
-
-    channel = ctx.author.voice.channel
-
-    if ctx.voice_client is None:
-        await channel.connect()
-
-    guild_id = ctx.guild.id
-
-    if ctx.voice_client.is_playing():
-        queues.setdefault(guild_id, []).append(query)
-        await ctx.send(f"➕ Added to Queue: **{query}**")
-    else:
-        await play_song(ctx, query)
-
-@bot.command()
-async def skip(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        await ctx.send("⏭ Skipped")
-
-@bot.command()
-async def stop(ctx):
-    guild_id = ctx.guild.id
-    queues[guild_id] = []
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("⏹ Music Stopped")
-
-# ================= AUTOPLAY ================= #
-
-@bot.command()
-async def autoplay(ctx, mode):
-    guild_id = ctx.guild.id
-    if mode.lower() == "on":
-        autoplay_status[guild_id] = True
-        await ctx.send("🔁 Autoplay Enabled")
-    else:
-        autoplay_status[guild_id] = False
-        await ctx.send("⛔ Autoplay Disabled")
-
-# ================= 24/7 MODE ================= #
-
-@bot.command(name="247")
-async def stay(ctx, mode):
-    guild_id = ctx.guild.id
-    if mode.lower() == "on":
-        stay_247[guild_id] = True
-        await ctx.send("♾ 24/7 Mode Enabled")
-    else:
-        stay_247[guild_id] = False
-        await ctx.send("❌ 24/7 Mode Disabled")
+# ================= ANTINUKE =================
 
 @bot.event
-async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
-    vc = member.guild.voice_client
-    if vc and not stay_247.get(member.guild.id, False):
-        if len(vc.channel.members) == 1:
-            await vc.disconnect()
+async def on_guild_channel_delete(channel):
+    async for entry in channel.guild.audit_logs(limit=1):
+        user = entry.user
+        if not antinuke_on() or is_safe(user): return
+        await channel.guild.ban(user)
+        await log(channel.guild, "🚨 Anti-Nuke Triggered",
+                  f"**User:** {user}\n**Action:** Channel Delete\n**Punishment:** Ban")
 
-# ================= READY ================= #
+@bot.event
+async def on_guild_role_delete(role):
+    async for entry in role.guild.audit_logs(limit=1):
+        user = entry.user
+        if not antinuke_on() or is_safe(user): return
+        await role.guild.ban(user)
+        await log(role.guild, "🚨 Role Delete",
+                  f"**User:** {user}\n**Punishment:** Ban")
+
+@bot.event
+async def on_guild_role_create(role):
+    async for entry in role.guild.audit_logs(limit=1):
+        user = entry.user
+        if not antinuke_on() or is_safe(user): return
+        await role.guild.ban(user)
+        await log(role.guild, "🚨 Role Create",
+                  f"**User:** {user}\n**Punishment:** Ban")
+
+@bot.event
+async def on_member_ban(guild, user):
+    async for entry in guild.audit_logs(limit=1):
+        mod = entry.user
+        if not antinuke_on() or is_safe(mod): return
+        await guild.ban(mod)
+        await log(guild, "🚨 Mass Ban",
+                  f"**User:** {mod}\n**Punishment:** Ban")
+
+@bot.event
+async def on_webhooks_update(channel):
+    async for entry in channel.guild.audit_logs(limit=1):
+        user = entry.user
+        if not antinuke_on() or is_safe(user): return
+        await channel.guild.ban(user)
+        await log(channel.guild, "🚨 Webhook Abuse",
+                  f"**User:** {user}\n**Punishment:** Ban")
+
+# 🤖 Bot Add Protection
+@bot.event
+async def on_member_join(member):
+    if member.bot:
+        async for entry in member.guild.audit_logs(limit=1):
+            user = entry.user
+            if not is_safe(user):
+                await member.guild.ban(user)
+                await log(member.guild, "🚨 Bot Add",
+                          f"**Adder:** {user}\n**Punishment:** Ban")
+
+# ================= AUTOMOD =================
+
+BAD_WORDS = ["mc", "bc", "madarchod", "bhosdike"]
+spam_tracker = {}
+message_cache = {}
+ping_tracker = {}
+
+def is_spam(user):
+    now = datetime.utcnow()
+    spam_tracker.setdefault(user.id, []).append(now)
+    spam_tracker[user.id] = [t for t in spam_tracker[user.id] if now - t < timedelta(seconds=5)]
+    return len(spam_tracker[user.id]) >= 5
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    if not automod_on():
+        return await bot.process_commands(message)
+
+    if is_safe(message.author):
+        return await bot.process_commands(message)
+
+    # 💬 Spam
+    if is_spam(message.author):
+        await message.delete()
+        await message.author.timeout(timedelta(seconds=30))
+        await log(message.guild, "🚫 Spam Detected",
+                  f"**User:** {message.author}\n**Punishment:** Timeout", 0xffa500)
+
+    # 🔗 Links
+    if "discord.gg" in message.content:
+        await message.delete()
+        await log(message.guild, "🔗 Link Blocked",
+                  f"**User:** {message.author}", 0x3498db)
+
+    # 🤬 Bad Words
+    for word in BAD_WORDS:
+        if word in message.content.lower():
+            await message.delete()
+            await message.author.timeout(timedelta(seconds=60))
+            await log(message.guild, "🤬 Abuse",
+                      f"**User:** {message.author}\n**Punishment:** Timeout", 0xff4500)
+            break
+
+    # 🔁 Repeat
+    if message_cache.get(message.author.id) == message.content:
+        await message.delete()
+        await log(message.guild, "🔁 Repeated Message",
+                  f"**User:** {message.author}")
+
+    message_cache[message.author.id] = message.content
+
+    # 💀 MASS PING AUTO LOCKDOWN
+    if "@everyone" in message.content or "@here" in message.content:
+        now = datetime.utcnow()
+
+        ping_tracker.setdefault(message.author.id, []).append(now)
+        ping_tracker[message.author.id] = [
+            t for t in ping_tracker[message.author.id]
+            if now - t < timedelta(seconds=10)
+        ]
+
+        if len(ping_tracker[message.author.id]) >= 3:
+            # FULL HIDE LOCKDOWN
+            for ch in message.guild.channels:
+                try:
+                    await ch.set_permissions(message.guild.default_role, view_channel=False)
+                except:
+                    pass
+
+            await log(
+                message.guild,
+                "💀 AUTO LOCKDOWN",
+                f"**User:** {message.author}\n**Reason:** 3x Mass Ping\n**Action:** Server Hidden",
+                0x000000
+            )
+
+        else:
+            await message.delete()
+            await message.author.timeout(timedelta(seconds=60))
+            await log(
+                message.guild,
+                "📢 Ping Warning",
+                f"**User:** {message.author}\n**Count:** {len(ping_tracker[message.author.id])}/3",
+                0xffa500
+            )
+
+    await bot.process_commands(message)
+
+# ================= COMMANDS =================
+
+@bot.command()
+async def antinuke(ctx, mode):
+    if ctx.author.id != OWNER_ID: return
+    data["antinuke"] = True if mode == "on" else False
+    save_data(data)
+    await ctx.send(f"🛡️ Anti-Nuke {mode}")
+
+@bot.command()
+async def automod(ctx, mode):
+    if ctx.author.id != OWNER_ID: return
+    data["automod"] = True if mode == "on" else False
+    save_data(data)
+    await ctx.send(f"🤖 Automod {mode}")
+
+@bot.command()
+async def whitelist(ctx, action, user: discord.Member = None):
+    if ctx.author.id != OWNER_ID: return
+
+    if action == "add" and user:
+        if user.id not in data["whitelist"]:
+            data["whitelist"].append(user.id)
+
+    elif action == "remove" and user:
+        if user.id in data["whitelist"]:
+            data["whitelist"].remove(user.id)
+
+    elif action == "list":
+        return await ctx.send(str(data["whitelist"]))
+
+    save_data(data)
+    await ctx.send("✅ Done")
+
+# ================= READY =================
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.watching,
+        name="Server Security 🛡️"
+    ))
 
-bot.run(TOKEN)
+    for g in bot.guilds:
+        if not discord.utils.get(g.text_channels, name=LOG_CHANNEL):
+            await g.create_text_channel(LOG_CHANNEL)
+
+bot.run("YOUR_NEW_TOKEN")
