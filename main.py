@@ -244,4 +244,4 @@ async def on_ready():
         if not discord.utils.get(g.text_channels, name=LOG_CHANNEL):
             await g.create_text_channel(LOG_CHANNEL)
 
-bot.run("YOUR_NEW_TOKEN")
+bot.run("TOKEN")
