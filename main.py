@@ -8,4 +8,4 @@ bot = commands.Bot(command_prefix=".", intents=intents)
 async def on_ready():
     print("BOT ONLINE")
 
-bot.run("TERA_TOKEN")
+bot.run("TOKEN")
