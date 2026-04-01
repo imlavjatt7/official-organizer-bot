@@ -1,154 +1,241 @@
 import discord
 from discord.ext import commands
-import json
-import re
-
-# --- SETTINGS ---
-TOKEN = "YOUR_BOT_TOKEN"
-PREFIX = "."
+from discord.ui import View, Select
+import json, os
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# --- DATABASE LOGIC ---
-def get_data():
+OWNER_ID = 1095541663121801226  # CHANGE THIS
+
+# ================= DATA =================
+def load_data():
     try:
-        with open("config.json", "r") as f:
+        with open("data.json") as f:
             return json.load(f)
     except:
-        return {"antinuke": {}, "whitelist": {}, "automod": {}}
+        return {
+            "extra_owner": [],
+            "autorole": None,
+            "antinuke": True,
+            "antinuke_wl": {
+                "ban": [], "unban": [], "kick": [], "bot": [],
+                "channel_create": [], "channel_delete": [], "channel_update": [],
+                "role_create": [], "role_delete": [], "role_update": [],
+                "member_update": [], "integration": [], "server_update": [],
+                "webhook": [], "emoji": [], "sticker": [],
+                "guild_event_create": [], "guild_event_update": [], "guild_event_delete": [],
+                "invite_delete": [], "role_ping": [], "everyone_ping": []
+            }
+        }
 
-def save_data(data):
-    with open("config.json", "w") as f:
-        json.dump(data, f, indent=4)
+def save_data(d):
+    with open("data.json","w") as f:
+        json.dump(d,f,indent=4)
 
-# --- CORE PROTECTION CHECK ---
-async def is_authorized(guild, user):
-    if user.id == guild.owner_id or user.id == bot.user.id:
-        return True
-    data = get_data()
-    whitelist = data["whitelist"].get(str(guild.id), [])
-    return user.id in whitelist
+data = load_data()
 
-async def punish(guild, member_id, reason):
+# ================= UTILS =================
+def is_safe(user):
+    return user.id == OWNER_ID or user.id in data["extra_owner"]
+
+def wl(user, action):
+    return is_safe(user) or user.id in data["antinuke_wl"].get(action, [])
+
+async def punish(guild, user):
+    if user.id == guild.owner_id:
+        return
     try:
-        member = await guild.fetch_member(member_id)
-        await member.ban(reason=f"Antinuke: {reason}")
+        await guild.ban(user, reason="💀 Anti-Nuke V3")
     except:
         pass
 
-# --- ANTINUKE EVENTS (Sare Features Yahan Hain) ---
+async def get_entry(guild):
+    async for e in guild.audit_logs(limit=1):
+        return e
+
+# ================= HELP =================
+@bot.command()
+async def help(ctx):
+    await ctx.send("💀 V3 Security Bot Active")
+
+# ================= ANTINUKE EVENTS =================
+
+# BAN / UNBAN
+@bot.event
+async def on_member_ban(guild, user):
+    e = await get_entry(guild)
+    if e and not wl(e.user, "ban"):
+        await punish(guild, e.user)
 
 @bot.event
-async def on_audit_log_entry_create(entry):
-    guild = entry.guild
-    data = get_data()
-    
-    # Check if Antinuke is ON
-    if not data["antinuke"].get(str(guild.id)):
-        return
+async def on_member_unban(guild, user):
+    e = await get_entry(guild)
+    if e and not wl(e.user, "unban"):
+        await punish(guild, e.user)
 
-    # Check if user is whitelisted
-    if await is_authorized(guild, entry.user):
-        return
+# KICK
+@bot.event
+async def on_member_remove(member):
+    e = await get_entry(member.guild)
+    if e and e.action.name == "kick":
+        if not wl(e.user, "kick"):
+            await punish(member.guild, e.user)
 
-    action = entry.action
-    user = entry.user
+# BOT ADD
+@bot.event
+async def on_member_join(member):
+    if member.bot:
+        e = await get_entry(member.guild)
+        if e and not wl(e.user, "bot"):
+            await punish(member.guild, e.user)
 
-    # Mapping Actions to Punishments
-    nuke_triggers = [
-        discord.AuditLogAction.ban,
-        discord.AuditLogAction.kick,
-        discord.AuditLogAction.channel_create,
-        discord.AuditLogAction.channel_delete,
-        discord.AuditLogAction.channel_update,
-        discord.AuditLogAction.role_create,
-        discord.AuditLogAction.role_delete,
-        discord.AuditLogAction.role_update,
-        discord.AuditLogAction.server_update,
-        discord.AuditLogAction.webhook_create,
-        discord.AuditLogAction.webhook_delete,
-        discord.AuditLogAction.emoji_create,
-        discord.AuditLogAction.sticker_create,
-        discord.AuditLogAction.bot_add
-    ]
-
-    if action in nuke_triggers:
-        await punish(guild, user.id, f"Triggered {action.name}")
-
-# --- AUTOMOD EVENTS ---
+# CHANNEL
+@bot.event
+async def on_guild_channel_create(ch):
+    e = await get_entry(ch.guild)
+    if e and not wl(e.user, "channel_create"):
+        await punish(ch.guild, e.user)
 
 @bot.event
-async def on_message(message):
-    if not message.guild or message.author.bot:
+async def on_guild_channel_delete(ch):
+    e = await get_entry(ch.guild)
+    if e and not wl(e.user, "channel_delete"):
+        await punish(ch.guild, e.user)
+
+@bot.event
+async def on_guild_channel_update(before, after):
+    e = await get_entry(after.guild)
+    if e and not wl(e.user, "channel_update"):
+        await punish(after.guild, e.user)
+
+# ROLE
+@bot.event
+async def on_guild_role_create(role):
+    e = await get_entry(role.guild)
+    if e and not wl(e.user, "role_create"):
+        await punish(role.guild, e.user)
+
+@bot.event
+async def on_guild_role_delete(role):
+    e = await get_entry(role.guild)
+    if e and not wl(e.user, "role_delete"):
+        await punish(role.guild, e.user)
+
+@bot.event
+async def on_guild_role_update(before, after):
+    e = await get_entry(after.guild)
+    if e and not wl(e.user, "role_update"):
+        await punish(after.guild, e.user)
+
+# MEMBER UPDATE
+@bot.event
+async def on_member_update(before, after):
+    e = await get_entry(after.guild)
+    if e and not wl(e.user, "member_update"):
+        await punish(after.guild, e.user)
+
+# SERVER UPDATE
+@bot.event
+async def on_guild_update(before, after):
+    e = await get_entry(after)
+    if e and not wl(e.user, "server_update"):
+        await punish(after, e.user)
+
+# WEBHOOK
+@bot.event
+async def on_webhooks_update(ch):
+    e = await get_entry(ch.guild)
+    if e and not wl(e.user, "webhook"):
+        await punish(ch.guild, e.user)
+
+# EMOJI
+@bot.event
+async def on_guild_emojis_update(guild, before, after):
+    e = await get_entry(guild)
+    if e and not wl(e.user, "emoji"):
+        await punish(guild, e.user)
+
+# STICKER
+@bot.event
+async def on_guild_stickers_update(guild, before, after):
+    e = await get_entry(guild)
+    if e and not wl(e.user, "sticker"):
+        await punish(guild, e.user)
+
+# INTEGRATION
+@bot.event
+async def on_guild_integrations_update(guild):
+    e = await get_entry(guild)
+    if e and not wl(e.user, "integration"):
+        await punish(guild, e.user)
+
+# EVENTS (SCHEDULED EVENTS)
+@bot.event
+async def on_scheduled_event_create(event):
+    e = await get_entry(event.guild)
+    if e and not wl(e.user, "guild_event_create"):
+        await punish(event.guild, e.user)
+
+@bot.event
+async def on_scheduled_event_update(before, after):
+    e = await get_entry(after.guild)
+    if e and not wl(e.user, "guild_event_update"):
+        await punish(after.guild, e.user)
+
+@bot.event
+async def on_scheduled_event_delete(event):
+    e = await get_entry(event.guild)
+    if e and not wl(e.user, "guild_event_delete"):
+        await punish(event.guild, e.user)
+
+# MESSAGE (PING / ROLE PING)
+@bot.event
+async def on_message(msg):
+    if msg.author.bot:
         return
-    
-    data = get_data()
-    guild_id = str(message.guild.id)
-    config = data["automod"].get(guild_id, {})
 
-    if await is_authorized(message.guild, message.author):
-        await bot.process_commands(message)
-        return
+    if "@everyone" in msg.content or "@here" in msg.content:
+        if not wl(msg.author, "everyone_ping"):
+            await msg.delete()
+            await punish(msg.guild, msg.author)
 
-    # 1. Anti-Link & Anti-Invite
-    if config.get("antilink") or config.get("antiinvite"):
-        if "http" in message.content or "discord.gg/" in message.content:
-            await message.delete()
-            return await message.channel.send(f"{message.author.mention} No links allowed!", delete_after=3)
+    for role in msg.role_mentions:
+        if not wl(msg.author, "role_ping"):
+            await msg.delete()
+            await punish(msg.guild, msg.author)
 
-    # 2. Mention Everyone/Role
-    if "@everyone" in message.content or "@here" in message.content or len(message.role_mentions) > 0:
-        await message.delete()
-        await punish(message.guild, message.author.id, "Mention Spam")
+    await bot.process_commands(msg)
 
-    await bot.process_commands(message)
-
-# --- COMMANDS SECTION ---
-
-@bot.group(invoke_without_command=True)
+# ================= WL COMMAND =================
+@bot.group()
 async def antinuke(ctx):
-    await ctx.send("Commands: `enable`, `disable`, `whitelist add/remove`, `config`")
+    pass
 
-@antinuke.command()
-@commands.has_permissions(administrator=True)
-async def enable(ctx):
-    data = get_data()
-    data["antinuke"][str(ctx.guild.id)] = True
+@antinuke.group()
+async def whitelist(ctx):
+    pass
+
+@antinuke.whitelist.command()
+async def add(ctx, action, user: discord.Member):
+    if not is_safe(ctx.author): return
+    data["antinuke_wl"][action].append(user.id)
     save_data(data)
-    await ctx.send("🛡️ Antinuke is now **Enabled**.")
+    await ctx.send("✅ WL Added")
 
-@antinuke.command()
-@commands.has_permissions(administrator=True)
-async def whitelist(ctx, option: str, member: discord.Member):
-    data = get_data()
-    gid = str(ctx.guild.id)
-    if gid not in data["whitelist"]: data["whitelist"][gid] = []
-
-    if option == "add":
-        if member.id not in data["whitelist"][gid]:
-            data["whitelist"][gid].append(member.id)
-            await ctx.send(f"✅ Added {member} to whitelist.")
-    elif option == "remove":
-        if member.id in data["whitelist"][gid]:
-            data["whitelist"][gid].remove(member.id)
-            await ctx.send(f"❌ Removed {member} from whitelist.")
-    
+@antinuke.whitelist.command()
+async def remove(ctx, action, user: discord.Member):
+    if not is_safe(ctx.author): return
+    try:
+        data["antinuke_wl"][action].remove(user.id)
+    except:
+        pass
     save_data(data)
+    await ctx.send("❌ WL Removed")
 
-@bot.group(invoke_without_command=True)
-async def automod(ctx):
-    await ctx.send("Commands: `antilink on/off`, `antiinvite on/off`")
+# ================= READY =================
+@bot.event
+async def on_ready():
+    print(f"💀 {bot.user} V3 ACTIVE")
 
-@automod.command()
-@commands.has_permissions(manage_guild=True)
-async def antilink(ctx, status: str):
-    data = get_data()
-    gid = str(ctx.guild.id)
-    if gid not in data["automod"]: data["automod"][gid] = {}
-    
-    data["automod"][gid]["antilink"] = (status.lower() == "on")
-    save_data(data)
-    await ctx.send(f"🤖 Anti-link set to {status}")
-
-bot.run(TOKEN)
+bot.run(os.getenv("TOKEN"))
