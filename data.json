@@ -1,0 +1,9 @@
+{
+  "antinuke": true,
+  "antilink": false,
+  "antispam": false,
+  "spam_time": 5,
+  "spam_limit": 5,
+  "extra_owner": [],
+  "wl": []
+}
