@@ -3,264 +3,192 @@ from discord.ext import commands
 from datetime import datetime, timedelta
 import json
 
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-OWNER_ID = 1234567890
-LOG_CHANNEL = "security-logs"
+OWNER_ID = 1234567890  # CHANGE
 
-# ================= DATABASE =================
-def load_data():
+# ================= DATA =================
+def load():
     try:
-        with open("data.json", "r") as f:
-            return json.load(f)
+        return json.load(open("data.json"))
     except:
         return {
-            "whitelist": [OWNER_ID],
+            "antilink": True,
+            "antispam": True,
+            "spam_time": 5,
+            "spam_limit": 5,
             "extra_owner": [],
-            "antinuke": True,
-            "automod": True
+            "wl": [],
+            "autorole_humans": None,
+            "autorole_bots": None
         }
 
-def save_data(data):
-    with open("data.json", "w") as f:
-        json.dump(data, f)
+def save(d):
+    json.dump(d, open("data.json","w"), indent=4)
 
-data = load_data()
-
-# ================= TRACKERS =================
-tracker = {}
-spam_tracker = {}
-message_cache = {}
+data = load()
 
 # ================= UTILS =================
-def track(user, action, limit, sec):
-    now = datetime.utcnow()
-    tracker.setdefault(user.id, {}).setdefault(action, []).append(now)
+def safe(u):
+    return u.id == OWNER_ID or u.id in data["extra_owner"] or u.id in data["wl"]
 
-    tracker[user.id][action] = [
-        t for t in tracker[user.id][action]
-        if now - t < timedelta(seconds=sec)
-    ]
+async def punish(guild, user, reason="Protection"):
+    try:
+        if user.id != guild.owner_id:
+            await guild.ban(user, reason=reason)
+    except:
+        pass
 
-    return len(tracker[user.id][action]) >= limit
+async def get_entry(guild):
+    try:
+        async for e in guild.audit_logs(limit=1):
+            return e
+    except:
+        return None
 
-def is_safe(user):
-    return user.id in data["whitelist"] or user.id in data["extra_owner"]
-
-def antinuke_on():
-    return data["antinuke"]
-
-def automod_on():
-    return data["automod"]
-
-async def log(guild, msg):
-    ch = discord.utils.get(guild.text_channels, name=LOG_CHANNEL)
-    if ch:
-        embed = discord.Embed(description=msg, color=0xff0000)
-        embed.timestamp = datetime.utcnow()
-        await ch.send(embed=embed)
-
-# ================= ANTINUKE EVENTS =================
+# ================= ANTINUKE =================
 
 @bot.event
-async def on_guild_channel_delete(channel):
-    async for entry in channel.guild.audit_logs(limit=1):
-        user = entry.user
-        if not antinuke_on() or is_safe(user): return
-
-        if track(user, "ch_del", 2, 10):
-            await channel.guild.ban(user)
-            await log(channel.guild, f"🚨 {user} banned (Channel Delete)")
+async def on_guild_channel_create(ch):
+    e = await get_entry(ch.guild)
+    if e and not safe(e.user):
+        await punish(ch.guild, e.user, "Channel Create")
 
 @bot.event
-async def on_guild_role_delete(role):
-    async for entry in role.guild.audit_logs(limit=1):
-        user = entry.user
-        if not antinuke_on() or is_safe(user): return
-
-        await role.guild.ban(user)
-        await log(role.guild, f"🚨 {user} banned (Role Delete)")
+async def on_guild_channel_delete(ch):
+    e = await get_entry(ch.guild)
+    if e and not safe(e.user):
+        await punish(ch.guild, e.user, "Channel Delete")
 
 @bot.event
-async def on_guild_role_create(role):
-    async for entry in role.guild.audit_logs(limit=1):
-        user = entry.user
-        if not antinuke_on() or is_safe(user): return
+async def on_guild_channel_update(before, after):
+    e = await get_entry(after.guild)
+    if e and not safe(e.user):
+        await punish(after.guild, e.user, "Channel Update")
 
-        await role.guild.ban(user)
-        await log(role.guild, f"🚨 {user} banned (Role Create)")
-
-@bot.event
-async def on_member_ban(guild, user):
-    async for entry in guild.audit_logs(limit=1):
-        mod = entry.user
-        if not antinuke_on() or is_safe(mod): return
-
-        if track(mod, "ban", 3, 10):
-            await guild.ban(mod)
-            await log(guild, f"🚨 {mod} banned (Mass Ban)")
+# ================= AUTOMOD =================
+spam = {}
 
 @bot.event
-async def on_webhooks_update(channel):
-    async for entry in channel.guild.audit_logs(limit=1):
-        user = entry.user
-        if not antinuke_on() or is_safe(user): return
+async def on_message(m):
+    if m.author.bot:
+        return
 
-        await channel.guild.ban(user)
-        await log(channel.guild, f"🚨 {user} banned (Webhook Abuse)")
+    # Anti Ping
+    if "@everyone" in m.content or "@here" in m.content or m.role_mentions:
+        if not safe(m.author):
+            await m.delete()
+            await punish(m.guild, m.author, "Ping Abuse")
+
+    # AntiLink
+    if data["antilink"] and "http" in m.content:
+        try:
+            await m.delete()
+        except:
+            pass
+
+    # AntiSpam
+    if data["antispam"]:
+        spam.setdefault(m.author.id, []).append(datetime.utcnow())
+        spam[m.author.id] = [
+            t for t in spam[m.author.id]
+            if datetime.utcnow() - t < timedelta(seconds=data["spam_time"])
+        ]
+        if len(spam[m.author.id]) >= data["spam_limit"]:
+            try:
+                await m.author.timeout(timedelta(seconds=30))
+            except:
+                pass
+
+    await bot.process_commands(m)
+
+# ================= AUTOROLE =================
 
 @bot.event
 async def on_member_join(member):
-    now = datetime.utcnow()
-    spam_tracker.setdefault(member.guild.id, []).append(now)
+    try:
+        if member.bot and data.get("autorole_bots"):
+            role = member.guild.get_role(data["autorole_bots"])
+            if role:
+                await member.add_roles(role)
 
-    recent = [
-        t for t in spam_tracker[member.guild.id]
-        if now - t < timedelta(seconds=10)
-    ]
+        elif not member.bot and data.get("autorole_humans"):
+            role = member.guild.get_role(data["autorole_humans"])
+            if role:
+                await member.add_roles(role)
+    except:
+        pass
 
-    if len(recent) >= 10:
-        for ch in member.guild.channels:
-            await ch.set_permissions(member.guild.default_role, send_messages=False)
+@bot.group()
+async def autorole(ctx):
+    pass
 
-        await log(member.guild, "🚨 Raid detected! Server locked")
+@autorole.command()
+async def humans(ctx, role: discord.Role):
+    if not safe(ctx.author): return
+    data["autorole_humans"] = role.id
+    save(data)
+    await ctx.send(f"👤 Humans autorole set: {role.name}")
 
-# ================= AUTOMOD =================
+@autorole.command()
+async def bots(ctx, role: discord.Role):
+    if not safe(ctx.author): return
+    data["autorole_bots"] = role.id
+    save(data)
+    await ctx.send(f"🤖 Bots autorole set: {role.name}")
 
-BAD_WORDS = ["mc", "bc", "madarchod", "bhosdike"]
-
-def is_spam(user):
-    now = datetime.utcnow()
-    spam_tracker.setdefault(user.id, []).append(now)
-
-    spam_tracker[user.id] = [
-        t for t in spam_tracker[user.id]
-        if now - t < timedelta(seconds=5)
-    ]
-
-    return len(spam_tracker[user.id]) >= 5
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-
-    if not automod_on():
-        return await bot.process_commands(message)
-
-    # whitelist + extra owner bypass
-    if is_safe(message.author):
-        return await bot.process_commands(message)
-
-    # spam
-    if is_spam(message.author):
-        await message.delete()
-        await message.author.timeout(timedelta(seconds=30))
-        await log(message.guild, f"🚫 {message.author} muted (Spam)")
-
-    # links
-    if "discord.gg" in message.content:
-        await message.delete()
-        await log(message.guild, f"🔗 Link removed ({message.author})")
-
-    # bad words
-    for word in BAD_WORDS:
-        if word in message.content.lower():
-            await message.delete()
-            await message.author.timeout(timedelta(seconds=60))
-            await log(message.guild, f"🤬 {message.author} muted (Bad Word)")
-            break
-
-    # repeat
-    if message_cache.get(message.author.id) == message.content:
-        await message.delete()
-        await log(message.guild, f"🔁 Repeated msg removed ({message.author})")
-
-    message_cache[message.author.id] = message.content
-
-    # everyone abuse
-    if "@everyone" in message.content or "@here" in message.content:
-        await message.delete()
-        await message.author.timeout(timedelta(seconds=60))
-        await log(message.guild, f"📢 Everyone abuse ({message.author})")
-
-    await bot.process_commands(message)
-
-# ================= COMMANDS =================
+# ================= WL & OWNER =================
 
 @bot.command()
-async def antinuke(ctx, mode):
-    if ctx.author.id != OWNER_ID: return
-    data["antinuke"] = True if mode == "on" else False
-    save_data(data)
-    await ctx.send(f"🛡️ Anti-Nuke {mode}")
+async def whitelist(ctx, mode, user: discord.Member):
+    if not safe(ctx.author): return
+    if mode == "add":
+        if user.id not in data["wl"]:
+            data["wl"].append(user.id)
+    elif mode == "remove":
+        if user.id in data["wl"]:
+            data["wl"].remove(user.id)
+    save(data)
+    await ctx.send("WL Updated")
 
 @bot.command()
-async def automod(ctx, mode):
+async def extraowner(ctx, user: discord.Member):
     if ctx.author.id != OWNER_ID: return
-    data["automod"] = True if mode == "on" else False
-    save_data(data)
-    await ctx.send(f"🤖 Automod {mode}")
+    if user.id not in data["extra_owner"]:
+        data["extra_owner"].append(user.id)
+    save(data)
+    await ctx.send("Extra Owner Added")
 
-@bot.command()
-async def whitelist(ctx, action, user: discord.Member = None):
-    if ctx.author.id != OWNER_ID: return
-
-    if action == "add" and user:
-        if user.id not in data["whitelist"]:
-            data["whitelist"].append(user.id)
-
-    elif action == "remove" and user:
-        if user.id in data["whitelist"]:
-            data["whitelist"].remove(user.id)
-
-    elif action == "list":
-        return await ctx.send(str(data["whitelist"]))
-
-    save_data(data)
-    await ctx.send("✅ Done")
-
-@bot.command()
-async def extraowner(ctx, action, user: discord.Member = None):
-    if ctx.author.id != OWNER_ID: return
-
-    if action == "add" and user:
-        if user.id not in data["extra_owner"]:
-            data["extra_owner"].append(user.id)
-
-    elif action == "remove" and user:
-        if user.id in data["extra_owner"]:
-            data["extra_owner"].remove(user.id)
-
-    save_data(data)
-    await ctx.send("👑 Updated")
+# ================= LOCKDOWN =================
 
 @bot.command()
 async def lockdown(ctx):
-    if not is_safe(ctx.author): return
-
+    if not safe(ctx.author): return
     for ch in ctx.guild.channels:
-        await ch.set_permissions(ctx.guild.default_role, send_messages=False)
-
-    await ctx.send("🔒 Server Locked")
+        try:
+            await ch.set_permissions(ctx.guild.default_role, view_channel=False)
+        except:
+            pass
+    await ctx.send("🔒 Server Fully Hidden")
 
 @bot.command()
-async def unlock(ctx):
-    if not is_safe(ctx.author): return
-
+async def unlockdown(ctx):
+    if not safe(ctx.author): return
     for ch in ctx.guild.channels:
-        await ch.set_permissions(ctx.guild.default_role, send_messages=True)
-
-    await ctx.send("✅ Server Unlocked")
+        try:
+            await ch.set_permissions(ctx.guild.default_role, view_channel=True)
+        except:
+            pass
+    await ctx.send("🔓 Server Visible Again")
 
 # ================= READY =================
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
-    for g in bot.guilds:
-        if not discord.utils.get(g.text_channels, name=LOG_CHANNEL):
-            await g.create_text_channel(LOG_CHANNEL)
+    print(f"🔥 {bot.user} ONLINE")
 
 bot.run("TOKEN")
