@@ -1,9 +1,10 @@
 {
-  "antinuke": true,
-  "antilink": false,
-  "antispam": false,
+  "antilink": true,
+  "antispam": true,
   "spam_time": 5,
   "spam_limit": 5,
   "extra_owner": [],
-  "wl": []
+  "wl": [],
+  "autorole_humans": null,
+  "autorole_bots": null
 }
